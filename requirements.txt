@@ -1,0 +1,11 @@
+paddleocr==2.6.1.3
+paddlepaddle==2.5.0
+easyocr
+opencv-python
+streamlit
+streamlit-webrtc
+openai
+paho-mqtt
+numpy
+av
+Pillow
