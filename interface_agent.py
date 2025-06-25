@@ -1,9 +1,7 @@
-
 import streamlit as st
 from meta_agent import MetaAgent
 from damage_detection_agent import DamageDetectionAgent
 from serial_number_agent import SerialNumberAgent
-import cv2
 import av
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
 from PIL import Image
@@ -45,14 +43,16 @@ for agent in selected_agents:
                 if frame is not None:
                     content_col1, content_col2, content_col3 = st.columns([1, 2, 1])
                     with content_col2:
-                        pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+                        pil_img = Image.fromarray(frame[..., ::-1])  # Convert BGR to RGB
                         st.image(pil_img, caption="📷 Captured Frame", use_container_width=True)
                         
                         with st.spinner("🔍 Analyzing image..."):
-                            serial_number = sn_agent.scan(pil_img)
-                            st.markdown("### 🧠 Detected Serial Number:")
-                            st.write(f"`{serial_number}`")
-                        
+                            serial_number, conf = sn_agent.scan(pil_img)
+                            if serial_number:
+                                st.markdown("### 🧠 Detected Serial Number:")
+                                st.success(f"`{serial_number}` (Confidence: {conf:.2f})")
+                            else:
+                                st.warning("No serial number detected.")
                 else:
                     st.warning("No frame captured. Please try again.")
 
