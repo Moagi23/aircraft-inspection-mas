@@ -2,10 +2,7 @@ streamlit
 streamlit-webrtc
 paddleocr
 paddlepaddle
-pillow
-numpy
 opencv-python-headless
-easyocr
-openai
-paho-mqtt
+Pillow
+numpy
 
