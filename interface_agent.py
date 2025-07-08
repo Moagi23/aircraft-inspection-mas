@@ -31,21 +31,26 @@ for agent in selected_agents:
         sn_agent = SerialNumberAgent()
         st.subheader("Serial Number Agent")
 
-        ctx = webrtc_streamer(key="serial-number", video_processor_factory=VideoProcessor, async_processing=True)
+        input_mode = st.radio("Choose Input Method", ["📷 Live Camera", "📁 Upload Image"])
 
-        if ctx.video_processor:
-            scan_button_col1, scan_button_col2, scan_button_col3 = st.columns([3, 1, 3])
-            with scan_button_col2:
-                scan_clicked = st.button("📸 Scan")
+        if input_mode == "📷 Live Camera":
+            ctx = webrtc_streamer(
+                key="serial-number",
+                video_processor_factory=VideoProcessor,
+                async_processing=True
+            )
 
-            if scan_clicked:
-                frame = ctx.video_processor.frame
-                if frame is not None:
-                    content_col1, content_col2, content_col3 = st.columns([1, 2, 1])
-                    with content_col2:
-                        pil_img = Image.fromarray(frame[..., ::-1])  # Convert BGR to RGB
+            if ctx.video_processor:
+                scan_button_col1, scan_button_col2, scan_button_col3 = st.columns([3, 1, 3])
+                with scan_button_col2:
+                    scan_clicked = st.button("📸 Scan")
+
+                if scan_clicked:
+                    frame = ctx.video_processor.frame
+                    if frame is not None:
+                        pil_img = Image.fromarray(frame[..., ::-1])  # BGR → RGB
                         st.image(pil_img, caption="📷 Captured Frame", use_container_width=True)
-                        
+
                         with st.spinner("🔍 Analyzing image..."):
                             serial_number, conf = sn_agent.scan(pil_img)
                             if serial_number:
@@ -53,10 +58,20 @@ for agent in selected_agents:
                                 st.success(f"`{serial_number}` (Confidence: {conf:.2f})")
                             else:
                                 st.warning("No serial number detected.")
-                else:
-                    st.warning("No frame captured. Please try again.")
+                    else:
+                        st.warning("No frame captured. Please try again.")
 
-    elif agent == "DamageDetectionAgent":
-        st.subheader("Damage Detection Agent")
-        dd_agent = DamageDetectionAgent()
-        st.info(dd_agent.get_status())
+        else:  # 📁 Upload Image
+            uploaded_img = st.file_uploader("Upload an image (JPG or PNG)", type=["jpg", "jpeg", "png"])
+            if uploaded_img:
+                pil_img = Image.open(uploaded_img)
+                st.image(pil_img, caption="🖼️ Uploaded Image", use_container_width=True)
+
+                with st.spinner("🔍 Analyzing image..."):
+                    serial_number, conf = sn_agent.scan(pil_img)
+                    if serial_number:
+                        st.markdown("### 🧠 Detected Serial Number:")
+                        st.success(f"`{serial_number}` (Confidence: {conf:.2f})")
+                    else:
+                        st.warning("No serial number detected.")
+

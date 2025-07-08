@@ -19,15 +19,27 @@ class SerialNumberAgent:
         self.api_url = api_url
 
     def scan(self, pil_img):
-        serial_number, confidence = self._try_api(pil_img)
+        print("🔍 Starting serial number scan...")
 
-        if confidence >= 0.8:
-            print(f"✅ Using OCR API result: {serial_number} (Confidence: {confidence})")
-            return serial_number, confidence
+        ocr_serial, ocr_conf = self._try_api(pil_img)
+
+        if ocr_conf is None:
+            print("🚫 OCR server unavailable. Aborting serial number scan.")
+            return None, 0.0
+
+        print(f"📄 OCR result: {ocr_serial} (Confidence: {ocr_conf:.2f})")
+
+        gpt_serial = self._use_gpt(pil_img)
+        print(f"🤖 GPT-4o result: {gpt_serial}")
+
+        verified_serial = self._verify_with_gpt(pil_img, ocr_serial, gpt_serial)
+
+        if verified_serial:
+            print(f"✅ Verified serial number: {verified_serial}")
+            return verified_serial, max(ocr_conf, 0.8)
         else:
-            print(f"⚠️ OCR confidence too low ({confidence}). Falling back to GPT...")
-            gpt_serial = self._use_gpt(pil_img)
-            return gpt_serial, confidence  # or maybe confidence = 1.0 for GPT fallback
+            print("⚠️ No reliable serial number detected.")
+            return None, 0.0
 
 
     def _try_api(self, pil_img):
@@ -44,11 +56,12 @@ class SerialNumberAgent:
                 confidence = data.get("confidence", 0.0)
                 return serial_number, confidence
             else:
-                print("API call failed:", response.text)
+                print(f"❌ OCR API responded with error: {response.status_code} - {response.text}")
+                return None, None  
         except Exception as e:
-            print("Error calling OCR API:", e)
+            print("❌ OCR API not reachable:", e)
+            return None, None
 
-        return None, 0.0
 
     def _use_gpt(self, pil_img):
         buffered = io.BytesIO()
@@ -57,7 +70,7 @@ class SerialNumberAgent:
 
         prompt = (
             "Extract the serial number from this image. "
-            "It may be labeled as 'Serial No.', 'SER', 'Snr', etc. "
+            "It may be labeled as SER', 'SERNO', 'SER NO', 'SERIAL', 'S/N', 'ESN', 'Serial No', etc. "
             "Return only the serial number value."
         )
 
@@ -83,4 +96,47 @@ class SerialNumberAgent:
             return response.choices[0].message.content.strip()
         except Exception as e:
             print("Error calling GPT-4o:", e)
+            return None
+    
+    def _verify_with_gpt(self, pil_img, ocr_serial, gpt_serial):
+        print("🧪 Verifying results using GPT-4o...")
+
+        buffered = io.BytesIO()
+        pil_img.save(buffered, format="PNG")
+        img_base64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+
+        prompt = (
+            "You are given an image of a serial number label. "
+            f"The OCR system extracted: `{ocr_serial}`\n"
+            f"The GPT model previously extracted: `{gpt_serial}`\n\n"
+            "Please determine the **correct serial number** based on the image and the two candidates. "
+            "If neither is correct, say 'None'. Return only the final serial number or 'None'."
+        )
+
+        try:
+            response = openai.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": prompt},
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/png;base64,{img_base64}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=50
+            )
+            answer = response.choices[0].message.content.strip()
+            print(f"🧠 GPT verification result: {answer}")
+            if answer.lower() == "none":
+                return None
+            return answer
+        except Exception as e:
+            print("❌ Error during GPT verification:", e)
             return None
