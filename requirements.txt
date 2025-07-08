@@ -1,7 +1,6 @@
 streamlit
 streamlit-webrtc
-paddleocr
-paddlepaddle
 pillow
 numpy
-
+openai
+python-dotenv
