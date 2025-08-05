@@ -61,7 +61,10 @@ for agent in selected_agents:
                 video_processor_factory=VideoProcessor,
                 rtc_configuration=rtc_config,
                 async_processing=True,
-                audio=False
+                media_stream_constraints={
+                    "video": True,
+                    "audio": False  # ✅ This disables audio correctly
+                }
             )
 
             if ctx.video_processor:
