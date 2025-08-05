@@ -75,8 +75,7 @@ for agent in selected_agents:
                 if scan_clicked:
                     frame = ctx.video_processor.frame
                     if frame is not None:
-                        pil_img = Image.fromarray(frame[..., ::-1])  # BGR → RGB
-                        st.image(pil_img, caption="📷 Captured Frame", use_container_width=True)
+                        pil_img = Image.fromarray(frame[..., ::-1]) 
 
                         with st.spinner("🔍 Analyzing image..."):
                             serial_number, conf = sn_agent.scan(pil_img)
