@@ -3,8 +3,10 @@ from meta_agent import MetaAgent
 from damage_detection_agent import DamageDetectionAgent
 from serial_number_agent import SerialNumberAgent
 import av
-from streamlit_webrtc import webrtc_streamer, VideoProcessorBase
+from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, RTCConfiguration
 from PIL import Image
+
+
 
 st.title("Aircraft Inspection Assistant")
 
@@ -16,6 +18,26 @@ selected_label = st.selectbox("Select inspection task", list(label_to_key.keys()
 task_type = label_to_key[selected_label]
 st.write(f"Selected Task: {task_data[task_type]['label']}")
 selected_agents = task_data[task_type]['agents']
+
+rtc_config = RTCConfiguration(
+    {
+        "iceServers": [
+            {"urls": ["stun:fr-turn2.xirsys.com"]},
+            {
+                "urls": [
+                    "turn:fr-turn2.xirsys.com:80?transport=udp",
+                    "turn:fr-turn2.xirsys.com:3478?transport=udp",
+                    "turn:fr-turn2.xirsys.com:80?transport=tcp",
+                    "turn:fr-turn2.xirsys.com:3478?transport=tcp",
+                    "turns:fr-turn2.xirsys.com:443?transport=tcp",
+                    "turns:fr-turn2.xirsys.com:5349?transport=tcp"
+                ],
+                "username": "irdXKd_EfhumLMw7XwVHh24u3OGGPh-ydOjPzM4C768Q-AShT6WNPCj0XmtXCeR7AAAAAGiRo79tb2FnaQ==",
+                "credential": "ebb60e18-71c4-11f0-9bb8-fa2d218ee094"
+            }
+        ]
+    }
+)
 
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
@@ -37,6 +59,7 @@ for agent in selected_agents:
             ctx = webrtc_streamer(
                 key="serial-number",
                 video_processor_factory=VideoProcessor,
+                rtc_configuration=rtc_config,
                 async_processing=True
             )
 
