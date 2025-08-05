@@ -60,7 +60,8 @@ for agent in selected_agents:
                 key="serial-number",
                 video_processor_factory=VideoProcessor,
                 rtc_configuration=rtc_config,
-                async_processing=True
+                async_processing=True,
+                audio=False
             )
 
             if ctx.video_processor:
