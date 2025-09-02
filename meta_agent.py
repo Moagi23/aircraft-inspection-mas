@@ -8,6 +8,10 @@ class MetaAgent:
                 "label": "Serial Number Inspection",
                 "agents": ["SerialNumberAgent"]
             },
+            "manual_serial": {
+                "label": "Manual Serial Entry",
+                "agents": ["ManualSerialEntryAgent"]
+            },
             "damage_detection": {
                 "label": "Damage Detection",
                 "agents": ["DamageDetectionAgent"]
