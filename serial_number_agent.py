@@ -70,7 +70,8 @@ class SerialNumberAgent:
 
         prompt = (
             "Extract the serial number from this image. "
-            "It may be labeled as SER', 'SERNO', 'SER NO', 'SERIAL', 'S/N', 'ESN', 'Serial No', etc. "
+            "It may be labeled as SER', 'SERNO', 'SER NO', 'SERIAL', 'S/N', 'ESN', 'Serial No', No Serie etc. "
+            "Ignore values labeled MODEL, TYPE, PNR, CERT, DATE, EXP, or MFR. "
             "Return only the serial number value."
         )
 
