@@ -23,12 +23,18 @@ from persistence import save_image, append_result, read_results
 st.set_page_config(page_title="Aircraft Inspection Assistant", layout="wide")
 st.title("Aircraft Inspection Assistant")
 
+# --- Stable Experiment ID (once per session) ---
+if "experiment_id" not in st.session_state:
+    st.session_state.experiment_id = str(uuid.uuid4())[:8]
+
 # Sidebar: experiment/session controls
 with st.sidebar:
     st.header("Experiment")
-    experiment_id = st.text_input("Experiment ID", value=str(uuid.uuid4())[:8])
+    st.text_input("Experiment ID", key="experiment_id")  # stays stable across reruns
     autosave = st.toggle("Auto-save results", value=True)
     notes = st.text_area("Notes (optional)")
+    if st.button("🔁 New random ID"):
+        st.session_state.experiment_id = str(uuid.uuid4())[:8]
 
 
 # ===================== Meta agent / tasks =====================
@@ -78,28 +84,27 @@ class VideoProcessor(VideoProcessorBase):
 
 
 # ===================== Helper: save one result row =====================
-def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_key, force=False):
-    """
-    Save a row to CSV.
-    - If force=False, respects the 'autosave' toggle (no save when off).
-    - If force=True, always saves (used for explicit Accept/Save actions).
-    """
+def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_key, force=False, source_note=None):
     if not force and not autosave:
         return
+
+    exp_id = st.session_state.get("experiment_id", "")
     img_path = save_image(pil_img) if pil_img is not None else None
+
     append_result(
         {
-            "experiment_id": experiment_id,
+            "experiment_id": exp_id,
             "task": task_key,
             "agent": agent_name,
-            "input_type": input_type,  # "camera" | "upload" | "manual"
+            "input_type": input_type,   # "camera" | "upload" | "manual"
             "serial_number": serial_number,
             "confidence": float(conf) if conf is not None else None,
             "image_path": img_path,
-            "notes": notes.strip() if notes else None,
+            "notes": (notes.strip() if notes else None) or source_note,  # ✅ auto remark
         }
     )
     st.success("✅ Result saved")
+
 
 
 # ===================== Render the selected task/agent =====================
@@ -113,26 +118,24 @@ if selected_agent == "SerialNumberAgent":
 
     # ---------- session state defaults ----------
     def _sn_init_state():
-        st.session_state.setdefault("sn_detected_serial", None)   # last detected value
-        st.session_state.setdefault("sn_conf", None)              # last confidence
-        st.session_state.setdefault("sn_image", None)             # last PIL image
-        st.session_state.setdefault("sn_edit_mode", False)        # editing on/off
-        st.session_state.setdefault("sn_edit_value", "")          # editable text
-        st.session_state.setdefault("sn_last_upload_hash", None)  # md5 of last processed upload
+        st.session_state.setdefault("sn_detected_serial", None)
+        st.session_state.setdefault("sn_conf", None)
+        st.session_state.setdefault("sn_image", None)
+        st.session_state.setdefault("sn_edit_mode", False)
+        st.session_state.setdefault("sn_edit_value", "")
+        st.session_state.setdefault("sn_last_upload_hash", None)
 
     _sn_init_state()
 
-    # ---------- helper: set detection result into state (no save yet) ----------
     def _sn_set_result(pil_img, serial_number, conf):
         st.session_state.sn_image = pil_img
         st.session_state.sn_detected_serial = serial_number
         st.session_state.sn_conf = conf
-        # reset edit state on new detection
         st.session_state.sn_edit_mode = False
         st.session_state.sn_edit_value = serial_number or ""
 
-    # ---------- helper: explicit save (forced) ----------
-    def _sn_save(serial_value):
+    def _sn_save(serial_value, edited=False):
+        source_note = "scanner-edited" if edited else "scanner-auto"
         _maybe_save(
             pil_img=st.session_state.sn_image,
             serial_number=serial_value,
@@ -140,10 +143,11 @@ if selected_agent == "SerialNumberAgent":
             input_type=("camera" if mode == "📷 Live Camera" else "upload"),
             agent_name="SerialNumberAgent",
             task_key=task_type,
-            force=True,  # explicit user confirmation bypasses autosave toggle
-        )
+            force=True,
+            source_note=source_note,   # ✅ mark in CSV
+    )
 
-    # ================= Input panes (detect only) =================
+    # ================= Input panes =================
     if mode == "📷 Live Camera":
         ctx = webrtc_streamer(
             key="serial-number",
@@ -160,7 +164,7 @@ if selected_agent == "SerialNumberAgent":
             if scan_clicked:
                 frame = ctx.video_processor.frame
                 if frame is not None:
-                    pil_img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
+                    pil_img = Image.fromarray(frame[..., ::-1])
                     with st.spinner("🔍 Analyzing image..."):
                         serial_number, conf = sn_agent.scan(pil_img)
                     if serial_number:
@@ -172,20 +176,16 @@ if selected_agent == "SerialNumberAgent":
                 else:
                     st.warning("No frame captured. Please try again.")
 
-    else:  # 📁 Upload Image — automatically detect once per unique file
+    else:  # 📁 Upload Image
         uploaded_img = st.file_uploader(
             "Upload an image (JPG or PNG)", type=["jpg", "jpeg", "png"], key="sn_upload"
         )
         if uploaded_img:
-            # Read bytes and compute a stable hash to avoid re-analysis on reruns
             raw = uploaded_img.getvalue()
             current_hash = hashlib.md5(raw).hexdigest()
-
-            # Show the uploaded image
             pil_img = Image.open(io.BytesIO(raw))
             st.image(pil_img, caption="🖼️ Uploaded Image", use_container_width=True)
 
-            # Only analyze if this is a NEW image (hash changed)
             if st.session_state.sn_last_upload_hash != current_hash:
                 with st.spinner("🔍 Analyzing image..."):
                     serial_number, conf = sn_agent.scan(pil_img)
@@ -195,12 +195,7 @@ if selected_agent == "SerialNumberAgent":
                 else:
                     st.warning("No serial number detected.")
                     _sn_set_result(pil_img, None, 0.0)
-
-                # Remember we've processed this exact upload
                 st.session_state.sn_last_upload_hash = current_hash
-            else:
-                # Do not re-run detection; keep previous result in Review panel
-                pass
 
     # ================= Review & Save panel =================
     st.divider()
@@ -226,7 +221,7 @@ if selected_agent == "SerialNumberAgent":
             )
 
         if accept_clicked and not st.session_state.sn_edit_mode:
-            _sn_save(detected)
+            _sn_save(detected, edited=False)
 
         if edit_clicked:
             st.session_state.sn_edit_mode = not st.session_state.sn_edit_mode
@@ -245,20 +240,17 @@ if selected_agent == "SerialNumberAgent":
             if save_edit_clicked:
                 cleaned = (new_val or "").strip()
                 if cleaned:
-                    _sn_save(cleaned)
-                    # reflect back the saved value in the panel
+                    _sn_save(cleaned, edited=True)
                     st.session_state.sn_detected_serial = cleaned
                     st.session_state.sn_edit_mode = False
                     st.success(f"Saved edited serial number: `{cleaned}`")
                 else:
                     st.warning("Please enter a valid serial number before saving.")
     else:
-        st.info("Capture a frame or upload an image to automatically detect the serial number. Nothing will be saved until you accept or edit & save.")
+        st.info("Capture a frame or upload an image to detect the serial number. Nothing will be saved until you accept or edit & save.")
 
 elif selected_agent == "ManualSerialEntryAgent":
-    # --- Manual Serial Entry (text-only, explicit save) ---
     st.subheader("Manual Serial Entry")
-
     manual_agent = ManualSerialEntryAgent()
     st.info("Enter a serial number manually. This will be saved with input_type=manual (no image).")
 
@@ -273,18 +265,17 @@ elif selected_agent == "ManualSerialEntryAgent":
             _maybe_save(
                 pil_img=None,
                 serial_number=cleaned,
-                conf=None,  # or 1.0 if you prefer "full confidence" for manual entries
+                conf=None,
                 input_type="manual",
                 agent_name="ManualSerialEntryAgent",
                 task_key=task_type,
-                force=True,  # explicit save
+                force=True,
             )
             st.success(f"Saved manual serial number: `{cleaned}`")
         else:
             st.warning("Please enter a valid serial number.")
 
 elif selected_agent == "DamageDetectionAgent":
-    # --- Placeholder for future damage detection ---
     st.subheader("Damage Detection")
     dd_agent = DamageDetectionAgent()
     st.info(dd_agent.get_status())
