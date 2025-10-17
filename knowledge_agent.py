@@ -2,7 +2,7 @@ class KnowledgeAgent:
     def __init__(self):
         # A simulated database of important serial numbers
         self.important_serials = [
-            "ABC123",
+            "A5CF64090",
             "DEF456",
             "XYZ789",
             "SN202501",
