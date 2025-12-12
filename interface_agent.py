@@ -32,6 +32,28 @@ st.title("Aircraft Inspection Assistant")
 #     unsafe_allow_html=True
 # )
 
+st.markdown("""
+<style>
+/* Limit WebRTC video size on mobile */
+@media (max-width: 768px) {
+    video {
+        max-width: 320px !important;   /* try 280–360 */
+        width: 100% !important;
+        height: auto !important;
+    }
+}
+
+/* Also limit captured image previews */
+@media (max-width: 768px) {
+    img {
+        max-width: 320px !important;
+        height: auto !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
+
 # --- Stable Experiment ID ---
 if "experiment_id" not in st.session_state:
     st.session_state.experiment_id = str(uuid.uuid4())[:8]
