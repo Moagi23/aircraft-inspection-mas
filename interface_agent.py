@@ -34,22 +34,31 @@ st.title("Aircraft Inspection Assistant")
 
 st.markdown("""
 <style>
-/* Limit WebRTC video size on mobile */
+
+/* === MOBILE ONLY === */
 @media (max-width: 768px) {
-    video {
-        max-width: 320px !important;   /* try 280–360 */
-        width: 100% !important;
-        height: auto !important;
-    }
+
+  /* Streamlit-webrtc container */
+  div[data-testid="stVideo"] {
+      max-width: 320px !important;
+      margin-left: auto;
+      margin-right: auto;
+  }
+
+  /* WebRTC internal video wrapper */
+  div[data-testid="stVideo"] video {
+      max-width: 320px !important;
+      width: 320px !important;
+      height: auto !important;
+  }
+
+  /* Captured image preview */
+  img {
+      max-width: 240px !important;
+      height: auto !important;
+  }
 }
 
-/* Also limit captured image previews */
-@media (max-width: 768px) {
-    img {
-        max-width: 320px !important;
-        height: auto !important;
-    }
-}
 </style>
 """, unsafe_allow_html=True)
 
