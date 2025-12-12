@@ -22,6 +22,16 @@ from persistence import save_image, append_result, read_results
 st.set_page_config(page_title="Aircraft Inspection Assistant", layout="wide")
 st.title("Aircraft Inspection Assistant")
 
+# Optional: force video element to not grow too large (may affect other videos on page)
+# st.markdown(
+#     """
+#     <style>
+#       video { max-width: 520px !important; height: auto !important; }
+#     </style>
+#     """,
+#     unsafe_allow_html=True
+# )
+
 # --- Stable Experiment ID ---
 if "experiment_id" not in st.session_state:
     st.session_state.experiment_id = str(uuid.uuid4())[:8]
@@ -45,6 +55,7 @@ st.write(f"Selected Task: {task_data[task_type]['label']}")
 selected_agent = task_data[task_type]["agents"][0]
 
 # ===================== WebRTC config =====================
+
 rtc_config = RTCConfiguration(
     {
         "iceServers": [
@@ -123,18 +134,34 @@ def serial_number_interface(sn_agent, agent_name):
 
     # --- Input: Camera or Upload ---
     if mode == "📷 Live Camera":
-        ctx = webrtc_streamer(
-            key=f"{agent_name}-cam",
-            video_processor_factory=VideoProcessor,
-            rtc_configuration=rtc_config,
-            async_processing=True,
-            media_stream_constraints={"video": True, "audio": False},
-        )
-        if ctx.video_processor:
-            if st.button("📸 Scan"):
+        # Layout: make the camera column narrower so the video doesn't fill the whole page
+        col_cam, col_side = st.columns([1, 2], vertical_alignment="top")
+
+        with col_cam:
+            st.caption("Camera preview")
+            ctx = webrtc_streamer(
+                key=f"{agent_name}-cam",
+                video_processor_factory=VideoProcessor,
+                rtc_configuration=rtc_config,
+                async_processing=True,
+                media_stream_constraints={
+                    "video": {
+                        "width": {"ideal": 1280},
+                        "height": {"ideal": 720},
+                        "frameRate": {"ideal": 10},
+                    },
+                    "audio": False,
+                },
+            )
+
+        with col_side:
+            st.caption("Scan / Output")
+            scan_clicked = st.button("📸 Scan", use_container_width=False)
+
+            if ctx.video_processor and scan_clicked:
                 frame = ctx.video_processor.frame
                 if frame is not None:
-                    pil_img = Image.fromarray(frame[..., ::-1])
+                    pil_img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
                     with st.spinner("🔍 Analyzing image..."):
                         serial_number, conf = sn_agent.scan(pil_img)
                     if serial_number:
@@ -148,6 +175,15 @@ def serial_number_interface(sn_agent, agent_name):
                         st.warning("No serial number detected.")
                 else:
                     st.warning("No frame captured.")
+
+            # Show last captured image/result on the side (optional but handy)
+            if st.session_state.sn_image is not None:
+                st.image(
+                    st.session_state.sn_image,
+                    caption="Last captured frame",
+                    width=240   # 👈 adjust: 200–320 works well
+                )
+
     else:
         uploaded_img = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
         if uploaded_img:
@@ -210,8 +246,15 @@ elif selected_agent == "ManualSerialEntryAgent":
     manual_sn = st.text_input("Serial Number", placeholder="e.g., ABC1234567")
     if st.button("💾 Save Manual Entry"):
         if manual_agent.validate(manual_sn):
-            _maybe_save(pil_img=None, serial_number=manual_sn.strip(), conf=None, input_type="manual",
-                        agent_name="ManualSerialEntryAgent", task_key=task_type, force=True)
+            _maybe_save(
+                pil_img=None,
+                serial_number=manual_sn.strip(),
+                conf=None,
+                input_type="manual",
+                agent_name="ManualSerialEntryAgent",
+                task_key=task_type,
+                force=True
+            )
             st.success(f"Saved manual serial number: `{manual_sn.strip()}`")
         else:
             st.warning("Please enter a valid serial number.")
@@ -228,7 +271,11 @@ rows = read_results()
 if rows:
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True)
-    st.download_button("⬇️ Download CSV", data=df.to_csv(index=False).encode("utf-8"),
-                       file_name="experiments.csv", mime="text/csv")
+    st.download_button(
+        "⬇️ Download CSV",
+        data=df.to_csv(index=False).encode("utf-8"),
+        file_name="experiments.csv",
+        mime="text/csv",
+    )
 else:
     st.info("No results saved yet.")
