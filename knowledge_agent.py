@@ -3,7 +3,7 @@ class KnowledgeAgent:
         # A simulated database of important serial numbers
         self.important_serials = [
             "S04878",
-            "11148A",
+            "11148 A",
             "60802657",
             "D00494",
             "227090-01",
@@ -12,7 +12,7 @@ class KnowledgeAgent:
             "083112030",
             "355862.50",
             "D06366",
-            "24809A",
+            "24809 A",
             "60335681",
             "D01436",
             "205968-04",
