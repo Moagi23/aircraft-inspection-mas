@@ -139,6 +139,7 @@ class SerialNumberKnowledgeAgent:
             "It may be labeled as SER', 'SERNO', 'SER NO', 'SERIAL', 'S/N', 'ESN', etc. "
             "Ignore values labeled MODEL, TYPE, PNR, CERT, DATE, EXP, or MFR. "
             "Return only the serial number value."
+            "DO NOT include labels such as 'SER', 'SERIAL', 'SER NO', 'S/N', 'ESN','SN', 'NO.'"
         )
 
         try:
