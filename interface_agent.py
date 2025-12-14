@@ -31,31 +31,11 @@ st.title("Aircraft Inspection Assistant")
 st.markdown(
     """
 <style>
-
-/* === MOBILE ONLY === */
 @media (max-width: 768px) {
-
-  /* Streamlit-webrtc container */
-  div[data-testid="stVideo"] {
-      max-width: 320px !important;
-      margin-left: auto;
-      margin-right: auto;
-  }
-
-  /* WebRTC internal video wrapper */
-  div[data-testid="stVideo"] video {
-      max-width: 320px !important;
-      width: 320px !important;
-      height: auto !important;
-  }
-
-  /* Captured image preview */
-  img {
-      max-width: 240px !important;
-      height: auto !important;
-  }
+  div[data-testid="stVideo"] { max-width: 320px !important; margin-left: auto; margin-right: auto; }
+  div[data-testid="stVideo"] video { max-width: 320px !important; width: 320px !important; height: auto !important; }
+  img { max-width: 240px !important; height: auto !important; }
 }
-
 </style>
 """,
     unsafe_allow_html=True,
@@ -183,7 +163,6 @@ def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_ke
     if not force and not autosave:
         return
 
-    # Ensure we have a case, stamp "result saved" time (UI-side)
     stamp("ts_result_saved", task_key=task_key, agent_name=agent_name, input_type=input_type)
 
     exp_id = st.session_state.get("experiment_id", "")
@@ -208,42 +187,69 @@ def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_ke
     append_result({**base_row, **timeline_cols})
     st.success("✅ Result saved")
 
-    # After saving a case, clear it so the next scan starts fresh
     st.session_state.current_case = None
 
 
-# ===================== Serial Number Agents =====================
+# ===================== Serial Number UI =====================
+def _unpack_agent_result(result):
+    """
+    Supports:
+      - (serial, conf)
+      - (serial, conf, is_known_good, source) [Knowledge agent]
+    Returns:
+      serial, conf, is_known_good, source
+    """
+    serial = None
+    conf = 0.0
+    is_known_good = False
+    source = None
+
+    if isinstance(result, tuple) and len(result) == 4:
+        serial, conf, is_known_good, source = result
+    else:
+        serial, conf = result
+
+    return serial, conf, bool(is_known_good), source
+
+
 def serial_number_interface(sn_agent, agent_name: str):
     """
-    UI for serial number tasks.
-
-    - Normal mode (SerialNumberAgent / SerialNumberKnowledgeAgent):
-        Scan -> show result -> Accept&Save or Edit&Save
-
-    - Scanner mode (ScannerAgent):
-        Scan -> auto-save immediately (no accept/edit UI)
+    - SerialNumberAgent: manual Accept/Edit
+    - SerialNumberKnowledgeAgent: auto-save ONLY if is_known_good True
+    - ScannerAgent: auto-save always (sn_agent.is_auto_save True)
     """
     st.subheader(f"{agent_name.replace('Agent','')} Inspection")
 
-    # ScannerAgent should define: is_auto_save = True
     auto_save_mode = bool(getattr(sn_agent, "is_auto_save", False))
-  
     mode = st.radio("Input", ["📷 Live Camera", "📁 Upload Image"], key=f"{agent_name}_mode")
     input_type = "camera" if mode == "📷 Live Camera" else "upload"
 
     # --- State init ---
     for key in ["sn_detected_serial", "sn_conf", "sn_image", "sn_edit_mode", "sn_edit_value", "sn_last_upload_hash"]:
         st.session_state.setdefault(key, None if "edit_mode" not in key else False)
+    st.session_state.setdefault("sn_is_known_good", False)
+    st.session_state.setdefault("sn_source", None)
 
-    def _sn_set_result(pil_img, serial_number, conf):
+    def _clear_sn_state():
+        st.session_state.sn_detected_serial = None
+        st.session_state.sn_conf = None
+        st.session_state.sn_image = None
+        st.session_state.sn_edit_mode = False
+        st.session_state.sn_edit_value = ""
+        st.session_state.sn_is_known_good = False
+        st.session_state.sn_source = None
+
+    def _sn_set_result(pil_img, serial_number, conf, *, is_known_good=False, source=None):
         st.session_state.sn_image = pil_img
         st.session_state.sn_detected_serial = serial_number
         st.session_state.sn_conf = conf
         st.session_state.sn_edit_value = serial_number or ""
         st.session_state.sn_edit_mode = False
+        st.session_state.sn_is_known_good = bool(is_known_good)
+        st.session_state.sn_source = source
 
-    def _sn_save(serial_value, edited=False):
-        source_note = "scanner-edited" if edited else "scanner-auto"
+    def _sn_save(serial_value, edited=False, note_override=None):
+        source_note = note_override or ("scanner-edited" if edited else "scanner-auto")
         _maybe_save(
             pil_img=st.session_state.sn_image,
             serial_number=serial_value,
@@ -272,17 +278,11 @@ def serial_number_interface(sn_agent, agent_name: str):
                 },
             )
 
-            # Stamp camera start when stream becomes playing
             is_playing = bool(getattr(ctx.state, "playing", False)) if ctx else False
             was_playing = st.session_state.get("webrtc_was_playing", False)
 
             if is_playing and not was_playing:
-                start_new_case(
-                    trigger="camera_start",
-                    task_key=task_type,
-                    agent_name=agent_name,
-                    input_type=input_type,
-                )
+                start_new_case(trigger="camera_start", task_key=task_type, agent_name=agent_name, input_type=input_type)
                 stamp("ts_camera_start", task_key=task_type, agent_name=agent_name, input_type=input_type)
 
             st.session_state.webrtc_was_playing = is_playing
@@ -303,22 +303,31 @@ def serial_number_interface(sn_agent, agent_name: str):
                     pil_img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
 
                     with st.spinner("🔍 Analyzing image..."):
-                        serial_number, conf = sn_agent.scan(pil_img)
-                        # Agent stamps:
-                        #   ts_ocr_result, ts_gpt_result, ts_gpt_verification
+                        result = sn_agent.scan(pil_img)
+
+                    serial_number, conf, is_known_good, source = _unpack_agent_result(result)
 
                     if serial_number:
-                        _sn_set_result(pil_img, serial_number, conf)
+                        _sn_set_result(pil_img, serial_number, conf, is_known_good=is_known_good, source=source)
 
+                        # Scanner mode: always auto-save
                         if auto_save_mode:
-                            _sn_save(serial_number, edited=False)
+                            _sn_save(serial_number, edited=False, note_override="scanner-auto")
                             st.success("✅ Auto-saved (Scanner mode).")
-                        else:
-                            st.success("Detected a serial number.")
+                            _clear_sn_state()
+                            st.stop()
+
+                        # Knowledge mode: auto-save ONLY if knowledge match
+                        if is_known_good:
+                            _sn_save(serial_number, edited=False, note_override=f"knowledge-auto:{source}")
+                            st.success(f"✅ Found in KnowledgeAgent ({source}) → saved automatically.")
+                            _clear_sn_state()
+                            st.stop()
+
+                        st.success("Detected a serial number.")
                     else:
                         st.warning("No serial number detected.")
 
-            # Show last captured image/result on the side
             if st.session_state.sn_image is not None:
                 st.image(st.session_state.sn_image, caption="Last captured frame", width=240)
 
@@ -341,16 +350,26 @@ def serial_number_interface(sn_agent, agent_name: str):
                 )
 
                 with st.spinner("🔍 Analyzing image..."):
-                    serial_number, conf = sn_agent.scan(pil_img)
+                    result = sn_agent.scan(pil_img)
+
+                serial_number, conf, is_known_good, source = _unpack_agent_result(result)
 
                 if serial_number:
-                    _sn_set_result(pil_img, serial_number, conf)
+                    _sn_set_result(pil_img, serial_number, conf, is_known_good=is_known_good, source=source)
 
                     if auto_save_mode:
-                        _sn_save(serial_number, edited=False)
+                        _sn_save(serial_number, edited=False, note_override="scanner-auto")
                         st.success("✅ Auto-saved (Scanner mode).")
-                    else:
-                        st.success("Detected a serial number.")
+                        _clear_sn_state()
+                        st.stop()
+
+                    if is_known_good:
+                        _sn_save(serial_number, edited=False, note_override=f"knowledge-auto:{source}")
+                        st.success(f"✅ Found in KnowledgeAgent ({source}) → saved automatically.")
+                        _clear_sn_state()
+                        st.stop()
+
+                    st.success("Detected a serial number.")
                 else:
                     st.warning("No serial number detected.")
 
@@ -382,7 +401,7 @@ def serial_number_interface(sn_agent, agent_name: str):
 
         if col_a.button("✅ Accept & Save"):
             stamp("ts_accept_save_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
-            _sn_save(detected, edited=False)
+            _sn_save(detected, edited=False, note_override="manual-accept")
 
         if col_b.button("✏️ Edit"):
             stamp("ts_edit_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
@@ -394,13 +413,12 @@ def serial_number_interface(sn_agent, agent_name: str):
                 stamp("ts_save_edited_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
                 cleaned = new_val.strip()
                 if cleaned:
-                    _sn_save(cleaned, edited=True)
+                    _sn_save(cleaned, edited=True, note_override="manual-edited")
                     st.success(f"Saved edited serial number: `{cleaned}`")
                 else:
                     st.warning("Please enter a valid serial number.")
     else:
         st.info("Capture or upload an image to detect the serial number.")
-
 
 
 # ===================== Agent Selection =====================
@@ -409,7 +427,7 @@ if selected_agent == "SerialNumberAgent":
 
 elif selected_agent == "SerialNumberKnowledgeAgent":
     serial_number_interface(SerialNumberKnowledgeAgent(), "SerialNumberKnowledgeAgent")
-    
+
 elif selected_agent == "ScannerAgent":
     serial_number_interface(ScannerAgent(), "ScannerAgent")
 
@@ -419,13 +437,7 @@ elif selected_agent == "ManualSerialEntryAgent":
     manual_sn = st.text_input("Serial Number", placeholder="e.g., ABC1234567")
 
     if st.button("💾 Save Manual Entry"):
-        # One manual entry = one case
-        start_new_case(
-            trigger="manual_entry",
-            task_key=task_type,
-            agent_name="ManualSerialEntryAgent",
-            input_type="manual",
-        )
+        start_new_case(trigger="manual_entry", task_key=task_type, agent_name="ManualSerialEntryAgent", input_type="manual")
         if manual_agent.validate(manual_sn):
             _maybe_save(
                 pil_img=None,

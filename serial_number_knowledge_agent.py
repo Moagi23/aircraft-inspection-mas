@@ -55,10 +55,19 @@ class SerialNumberKnowledgeAgent:
 
     Behavior:
       1) OCR via API
-      2) KnowledgeAgent check (auto-accept if important)
+      2) Knowledge list check (auto-accept if match)
       3) GPT extraction
-      4) KnowledgeAgent check (auto-accept if important)
+      4) Knowledge list check (auto-accept if match)
       5) GPT verification (final arbitration)
+      6) Knowledge list check (auto-accept if match)
+
+    Return signature (for UI):
+      (serial_number, ocr_confidence, is_known_good, source)
+
+    Where:
+      - is_known_good == True means: match in KnowledgeAgent list -> UI should auto-save
+      - source in {"ocr", "gpt", "verify", "none"}
+      - confidence is ALWAYS PaddleOCR confidence
     """
 
     def __init__(self, api_url: str = "http://168.119.242.186:8500/scan_serial"):
@@ -74,15 +83,15 @@ class SerialNumberKnowledgeAgent:
         ocr_serial, ocr_conf = self._try_ocr_api(pil_img)
         if ocr_conf is None:
             print("🚫 OCR server unavailable. Aborting scan.")
-            return None, 0.0
+            return None, 0.0, False, "none"
 
         if ocr_serial:
             print(f"📄 OCR result: {ocr_serial} (Confidence: {ocr_conf:.2f})")
 
             # 2) Knowledge check after OCR
             if ocr_serial in important:
-                print("✅ Found in KnowledgeAgent after OCR. Auto-accepting.")
-                return ocr_serial, float(ocr_conf)
+                print("✅ OCR matches Knowledge list. Auto-accepting.")
+                return ocr_serial, float(ocr_conf), True, "ocr"
 
         # 3) GPT extraction
         gpt_serial = self._gpt_extract_serial(pil_img)
@@ -91,17 +100,24 @@ class SerialNumberKnowledgeAgent:
 
             # 4) Knowledge check after GPT extraction
             if gpt_serial in important:
-                print("✅ Found in KnowledgeAgent after GPT. Auto-accepting.")
-                return gpt_serial, float(ocr_conf)
+                print("✅ GPT extraction matches Knowledge list. Auto-accepting.")
+                return gpt_serial, float(ocr_conf), True, "gpt"
 
         # 5) GPT verification
         verified = self._gpt_verify_serial(pil_img, ocr_serial, gpt_serial)
         if verified:
             print(f"🧪 Verified serial number: {verified}")
-            return verified, float(ocr_conf)
+
+            # 6) Knowledge check after verification
+            if verified in important:
+                print("✅ GPT verification matches Knowledge list. Auto-accepting.")
+                return verified, float(ocr_conf), True, "verify"
+
+            # Not in list -> user must accept/edit
+            return verified, float(ocr_conf), False, "verify"
 
         print("⚠️ No reliable serial number detected.")
-        return None, 0.0
+        return None, float(ocr_conf), False, "none"
 
     # ----------------- internal helpers -----------------
 
@@ -134,12 +150,14 @@ class SerialNumberKnowledgeAgent:
     def _gpt_extract_serial(self, pil_img: Image.Image):
         img_base64 = self._pil_to_base64_png(pil_img)
 
+        # ✅ Improved prompt (label not part of the serial)
         prompt = (
-            "Extract the serial number from this image. "
-            "It may be labeled as SER', 'SERNO', 'SER NO', 'SERIAL', 'S/N', 'ESN', etc. "
-            "Ignore values labeled MODEL, TYPE, PNR, CERT, DATE, EXP, or MFR. "
-            "Return only the serial number value."
-            "DO NOT include labels such as 'SER', 'SERIAL', 'SER NO', 'S/N', 'ESN','SN', 'NO.'"
+            "Extract the serial number from this image.\n\n"
+            "IMPORTANT:\n"
+            "- Return ONLY the serial number value (alphanumeric).\n"
+            "- DO NOT include labels like SER, SERIAL, SER NO, SERNO, S/N, ESN, SN, NO., etc.\n"
+            "- Ignore values labeled MODEL, TYPE, P/N, PN, PART NO, PNR, CERT, DATE, EXP, or MFR.\n"
+            "- If no clear serial number is visible, return 'None'."
         )
 
         try:
@@ -159,6 +177,8 @@ class SerialNumberKnowledgeAgent:
             # ✅ GPT extraction returned
             _stamp_case("ts_gpt_result")
 
+            if out and out.lower() == "none":
+                return None
             return out
 
         except Exception as e:
@@ -172,9 +192,8 @@ class SerialNumberKnowledgeAgent:
             "You are given an image of a serial number label.\n"
             f"The OCR system extracted: `{ocr_serial}`\n"
             f"The GPT model extracted: `{gpt_serial}`\n\n"
-            "Determine the correct serial number based on the image and the two candidates. "
-            "If neither is correct, reply with 'None'. "
-            "Return only the final serial number or 'None'."
+            "Choose the correct serial number based on the image.\n"
+            "Return ONLY the final serial number value (no labels like SER/SN/S/N), or 'None'."
         )
 
         try:
@@ -194,7 +213,7 @@ class SerialNumberKnowledgeAgent:
             # ✅ GPT verification returned
             _stamp_case("ts_gpt_verification")
 
-            if answer.lower() == "none":
+            if answer and answer.lower() == "none":
                 return None
             return answer
 
