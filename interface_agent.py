@@ -1,6 +1,10 @@
 import uuid
 import io
 import hashlib
+import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import streamlit as st
 from PIL import Image
@@ -18,21 +22,13 @@ from damage_detection_agent import DamageDetectionAgent
 # CSV persistence helpers
 from persistence import save_image, append_result, read_results
 
+
 # ===================== Page setup =====================
 st.set_page_config(page_title="Aircraft Inspection Assistant", layout="wide")
 st.title("Aircraft Inspection Assistant")
 
-# Optional: force video element to not grow too large (may affect other videos on page)
-# st.markdown(
-#     """
-#     <style>
-#       video { max-width: 520px !important; height: auto !important; }
-#     </style>
-#     """,
-#     unsafe_allow_html=True
-# )
-
-st.markdown("""
+st.markdown(
+    """
 <style>
 
 /* === MOBILE ONLY === */
@@ -60,8 +56,66 @@ st.markdown("""
 }
 
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
+# ===================== Case timeline (stored into Saved Results) =====================
+VIENNA = ZoneInfo("Europe/Vienna")
+
+
+def now_vienna_iso() -> str:
+    return datetime.now(VIENNA).isoformat(timespec="milliseconds")
+
+
+def init_case_state():
+    st.session_state.setdefault("current_case", None)
+    st.session_state.setdefault("webrtc_was_playing", False)
+
+
+def start_new_case(trigger: str, *, task_key: str, agent_name: str, input_type: str, **meta):
+    """
+    Start a new test-case timeline.
+    One case -> one row in Saved Results.
+    """
+    st.session_state.current_case = {
+        "case_id": str(uuid.uuid4())[:8],
+        "experiment_id": st.session_state.get("experiment_id", ""),
+        "task": task_key,
+        "agent": agent_name,
+        "input_type": input_type,
+        "trigger": trigger,
+        "meta": json.dumps(meta, ensure_ascii=False) if meta else None,
+        # timeline columns (all go into Saved Results)
+        "ts_camera_start": None,
+        "ts_scan_pressed": None,
+        "ts_ocr_result": None,           # stamped inside agent (OCR API returns)
+        "ts_gpt_result": None,           # stamped inside agent (GPT extract returns)
+        "ts_gpt_verification": None,     # stamped inside agent (GPT verify returns)
+        "ts_accept_save_pressed": None,
+        "ts_edit_pressed": None,
+        "ts_save_edited_pressed": None,
+        "ts_result_saved": None,
+    }
+
+
+def ensure_case(*, task_key: str, agent_name: str, input_type: str, trigger_if_new: str = "auto"):
+    init_case_state()
+    if st.session_state.current_case is None:
+        start_new_case(trigger_if_new, task_key=task_key, agent_name=agent_name, input_type=input_type)
+
+
+def stamp(field: str, *, task_key: str, agent_name: str, input_type: str):
+    """
+    UI-side stamps (camera start / scan pressed / accept/save/edit/save edited / result saved).
+    First-write-wins to avoid overwriting agent stamps.
+    """
+    ensure_case(task_key=task_key, agent_name=agent_name, input_type=input_type)
+    if st.session_state.current_case.get(field) is None:
+        st.session_state.current_case[field] = now_vienna_iso()
+
+
+init_case_state()
 
 # --- Stable Experiment ID ---
 if "experiment_id" not in st.session_state:
@@ -76,6 +130,7 @@ with st.sidebar:
     if st.button("🔁 New random ID"):
         st.session_state.experiment_id = str(uuid.uuid4())[:8]
 
+
 # ===================== Meta agent / tasks =====================
 meta_agent = MetaAgent()
 task_data = meta_agent.get_tasks_and_agents()
@@ -85,8 +140,8 @@ task_type = label_to_key[selected_label]
 st.write(f"Selected Task: {task_data[task_type]['label']}")
 selected_agent = task_data[task_type]["agents"][0]
 
-# ===================== WebRTC config =====================
 
+# ===================== WebRTC config =====================
 rtc_config = RTCConfiguration(
     {
         "iceServers": [
@@ -107,6 +162,7 @@ rtc_config = RTCConfiguration(
     }
 )
 
+
 class VideoProcessor(VideoProcessorBase):
     def __init__(self):
         self.frame = None
@@ -116,14 +172,25 @@ class VideoProcessor(VideoProcessorBase):
         self.frame = img
         return av.VideoFrame.from_ndarray(img, format="bgr24")
 
+
 # ===================== Helper =====================
 def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_key, force=False, source_note=None):
+    """
+    Save ONE row to Saved Results.
+    Also merges timeline stamps from the current test case into that row.
+    """
     if not force and not autosave:
         return
+
+    # Ensure we have a case, stamp "result saved" time (UI-side)
+    stamp("ts_result_saved", task_key=task_key, agent_name=agent_name, input_type=input_type)
+
     exp_id = st.session_state.get("experiment_id", "")
     img_path = save_image(pil_img) if pil_img is not None else None
-    append_result({
+
+    base_row = {
         "experiment_id": exp_id,
+        "case_id": (st.session_state.current_case or {}).get("case_id"),
         "task": task_key,
         "agent": agent_name,
         "input_type": input_type,
@@ -131,13 +198,24 @@ def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_ke
         "confidence": float(conf) if conf is not None else None,
         "image_path": img_path,
         "notes": (notes.strip() if notes else None) or source_note,
-    })
+    }
+
+    timeline_cols = {}
+    if st.session_state.current_case:
+        timeline_cols = {k: v for k, v in st.session_state.current_case.items() if k.startswith("ts_")}
+
+    append_result({**base_row, **timeline_cols})
     st.success("✅ Result saved")
 
+    # After saving a case, clear it so the next scan starts fresh
+    st.session_state.current_case = None
+
+
 # ===================== Serial Number Agents =====================
-def serial_number_interface(sn_agent, agent_name):
+def serial_number_interface(sn_agent, agent_name: str):
     st.subheader(f"{agent_name.replace('Agent','')} Inspection")
     mode = st.radio("Input", ["📷 Live Camera", "📁 Upload Image"], key=f"{agent_name}_mode")
+    input_type = "camera" if mode == "📷 Live Camera" else "upload"
 
     # --- State init ---
     for key in ["sn_detected_serial", "sn_conf", "sn_image", "sn_edit_mode", "sn_edit_value", "sn_last_upload_hash"]:
@@ -156,7 +234,7 @@ def serial_number_interface(sn_agent, agent_name):
             pil_img=st.session_state.sn_image,
             serial_number=serial_value,
             conf=st.session_state.sn_conf,
-            input_type=("camera" if mode == "📷 Live Camera" else "upload"),
+            input_type=input_type,
             agent_name=agent_name,
             task_key=task_type,
             force=True,
@@ -165,7 +243,6 @@ def serial_number_interface(sn_agent, agent_name):
 
     # --- Input: Camera or Upload ---
     if mode == "📷 Live Camera":
-        # Layout: make the camera column narrower so the video doesn't fill the whole page
         col_cam, col_side = st.columns([1, 2], vertical_alignment="top")
 
         with col_cam:
@@ -185,16 +262,41 @@ def serial_number_interface(sn_agent, agent_name):
                 },
             )
 
+            # Timestamp: "pressed start button" -> stream transitions to playing
+            is_playing = bool(getattr(ctx.state, "playing", False)) if ctx else False
+            was_playing = st.session_state.get("webrtc_was_playing", False)
+
+            if is_playing and not was_playing:
+                # Start a new test case when camera starts
+                start_new_case(
+                    trigger="camera_start",
+                    task_key=task_type,
+                    agent_name=agent_name,
+                    input_type=input_type,
+                )
+                stamp("ts_camera_start", task_key=task_type, agent_name=agent_name, input_type=input_type)
+
+            st.session_state.webrtc_was_playing = is_playing
+
         with col_side:
             st.caption("Scan / Output")
             scan_clicked = st.button("📸 Scan", use_container_width=False)
+
+            if scan_clicked:
+                ensure_case(task_key=task_type, agent_name=agent_name, input_type=input_type, trigger_if_new="scan_pressed")
+                stamp("ts_scan_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
 
             if ctx.video_processor and scan_clicked:
                 frame = ctx.video_processor.frame
                 if frame is not None:
                     pil_img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
+
                     with st.spinner("🔍 Analyzing image..."):
                         serial_number, conf = sn_agent.scan(pil_img)
+                        # NOTE: Do NOT stamp OCR/GPT timestamps here.
+                        # Agents stamp:
+                        #   ts_ocr_result, ts_gpt_result, ts_gpt_verification
+
                     if serial_number:
                         _sn_set_result(pil_img, serial_number, conf)
                         if conf == 1.0:
@@ -207,13 +309,9 @@ def serial_number_interface(sn_agent, agent_name):
                 else:
                     st.warning("No frame captured.")
 
-            # Show last captured image/result on the side (optional but handy)
+            # Show last captured image/result on the side
             if st.session_state.sn_image is not None:
-                st.image(
-                    st.session_state.sn_image,
-                    caption="Last captured frame",
-                    width=240   # 👈 adjust: 200–320 works well
-                )
+                st.image(st.session_state.sn_image, caption="Last captured frame", width=240)
 
     else:
         uploaded_img = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
@@ -222,9 +320,21 @@ def serial_number_interface(sn_agent, agent_name):
             current_hash = hashlib.md5(raw).hexdigest()
             pil_img = Image.open(io.BytesIO(raw))
             st.image(pil_img, caption="🖼️ Uploaded Image", use_container_width=True)
+
             if st.session_state.sn_last_upload_hash != current_hash:
+                # Start a new test case when a *new* upload is analyzed
+                start_new_case(
+                    trigger="upload_analyzed",
+                    task_key=task_type,
+                    agent_name=agent_name,
+                    input_type=input_type,
+                    bytes=len(raw),
+                )
+
                 with st.spinner("🔍 Analyzing image..."):
                     serial_number, conf = sn_agent.scan(pil_img)
+                    # NOTE: Do NOT stamp OCR/GPT timestamps here (agent stamps them)
+
                 if serial_number:
                     _sn_set_result(pil_img, serial_number, conf)
                     if conf == 1.0:
@@ -247,22 +357,31 @@ def serial_number_interface(sn_agent, agent_name):
         st.code(detected)
         if conf is not None:
             st.caption(f"Confidence: {conf:.2f}")
+
         col_a, col_b = st.columns([1, 1])
+
         if col_a.button("✅ Accept & Save"):
+            stamp("ts_accept_save_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
             _sn_save(detected, edited=False)
+
         if col_b.button("✏️ Edit"):
+            stamp("ts_edit_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
             st.session_state.sn_edit_mode = not st.session_state.sn_edit_mode
+
         if st.session_state.sn_edit_mode:
             new_val = st.text_input("Edit serial number", value=st.session_state.sn_edit_value)
             if st.button("💾 Save Edited Serial"):
+                stamp("ts_save_edited_pressed", task_key=task_type, agent_name=agent_name, input_type=input_type)
                 cleaned = new_val.strip()
                 if cleaned:
                     _sn_save(cleaned, edited=True)
                     st.success(f"Saved edited serial number: `{cleaned}`")
                 else:
                     st.warning("Please enter a valid serial number.")
+
     elif not detected:
         st.info("Capture or upload an image to detect the serial number.")
+
 
 # ===================== Agent Selection =====================
 if selected_agent == "SerialNumberAgent":
@@ -275,7 +394,15 @@ elif selected_agent == "ManualSerialEntryAgent":
     st.subheader("Manual Serial Entry")
     manual_agent = ManualSerialEntryAgent()
     manual_sn = st.text_input("Serial Number", placeholder="e.g., ABC1234567")
+
     if st.button("💾 Save Manual Entry"):
+        # One manual entry = one case
+        start_new_case(
+            trigger="manual_entry",
+            task_key=task_type,
+            agent_name="ManualSerialEntryAgent",
+            input_type="manual",
+        )
         if manual_agent.validate(manual_sn):
             _maybe_save(
                 pil_img=None,
@@ -284,7 +411,7 @@ elif selected_agent == "ManualSerialEntryAgent":
                 input_type="manual",
                 agent_name="ManualSerialEntryAgent",
                 task_key=task_type,
-                force=True
+                force=True,
             )
             st.success(f"Saved manual serial number: `{manual_sn.strip()}`")
         else:
@@ -295,12 +422,39 @@ elif selected_agent == "DamageDetectionAgent":
     dd_agent = DamageDetectionAgent()
     st.info(dd_agent.get_status())
 
+
 # ===================== Results Viewer =====================
 st.divider()
 st.subheader("Saved Results")
+
 rows = read_results()
 if rows:
     df = pd.DataFrame(rows)
+
+    preferred = [
+        "experiment_id",
+        "case_id",
+        "task",
+        "agent",
+        "input_type",
+        "serial_number",
+        "confidence",
+        "ts_camera_start",
+        "ts_scan_pressed",
+        "ts_ocr_result",
+        "ts_gpt_result",
+        "ts_gpt_verification",
+        "ts_accept_save_pressed",
+        "ts_edit_pressed",
+        "ts_save_edited_pressed",
+        "ts_result_saved",
+        "image_path",
+        "notes",
+        "timestamp_iso",
+    ]
+    cols = [c for c in preferred if c in df.columns] + [c for c in df.columns if c not in preferred]
+    df = df[cols]
+
     st.dataframe(df, use_container_width=True)
     st.download_button(
         "⬇️ Download CSV",
