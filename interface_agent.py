@@ -18,6 +18,7 @@ from serial_number_agent import SerialNumberAgent
 from serial_number_knowledge_agent import SerialNumberKnowledgeAgent
 from manual_serial_entry_agent import ManualSerialEntryAgent
 from damage_detection_agent import DamageDetectionAgent
+from scanner_agent import ScannerAgent
 
 # CSV persistence helpers
 from persistence import save_image, append_result, read_results
@@ -213,7 +214,20 @@ def _maybe_save(*, pil_img, serial_number, conf, input_type, agent_name, task_ke
 
 # ===================== Serial Number Agents =====================
 def serial_number_interface(sn_agent, agent_name: str):
+    """
+    UI for serial number tasks.
+
+    - Normal mode (SerialNumberAgent / SerialNumberKnowledgeAgent):
+        Scan -> show result -> Accept&Save or Edit&Save
+
+    - Scanner mode (ScannerAgent):
+        Scan -> auto-save immediately (no accept/edit UI)
+    """
     st.subheader(f"{agent_name.replace('Agent','')} Inspection")
+
+    # ScannerAgent should define: is_auto_save = True
+    auto_save_mode = bool(getattr(sn_agent, "is_auto_save", False))
+  
     mode = st.radio("Input", ["📷 Live Camera", "📁 Upload Image"], key=f"{agent_name}_mode")
     input_type = "camera" if mode == "📷 Live Camera" else "upload"
 
@@ -241,7 +255,7 @@ def serial_number_interface(sn_agent, agent_name: str):
             source_note=source_note,
         )
 
-    # --- Input: Camera or Upload ---
+    # ===================== CAMERA =====================
     if mode == "📷 Live Camera":
         col_cam, col_side = st.columns([1, 2], vertical_alignment="top")
 
@@ -253,21 +267,16 @@ def serial_number_interface(sn_agent, agent_name: str):
                 rtc_configuration=rtc_config,
                 async_processing=True,
                 media_stream_constraints={
-                    "video": {
-                        "width": {"ideal": 1280},
-                        "height": {"ideal": 720},
-                        "frameRate": {"ideal": 10},
-                    },
+                    "video": {"width": {"ideal": 1280}, "height": {"ideal": 720}, "frameRate": {"ideal": 10}},
                     "audio": False,
                 },
             )
 
-            # Timestamp: "pressed start button" -> stream transitions to playing
+            # Stamp camera start when stream becomes playing
             is_playing = bool(getattr(ctx.state, "playing", False)) if ctx else False
             was_playing = st.session_state.get("webrtc_was_playing", False)
 
             if is_playing and not was_playing:
-                # Start a new test case when camera starts
                 start_new_case(
                     trigger="camera_start",
                     task_key=task_type,
@@ -288,31 +297,32 @@ def serial_number_interface(sn_agent, agent_name: str):
 
             if ctx.video_processor and scan_clicked:
                 frame = ctx.video_processor.frame
-                if frame is not None:
+                if frame is None:
+                    st.warning("No frame captured.")
+                else:
                     pil_img = Image.fromarray(frame[..., ::-1])  # BGR -> RGB
 
                     with st.spinner("🔍 Analyzing image..."):
                         serial_number, conf = sn_agent.scan(pil_img)
-                        # NOTE: Do NOT stamp OCR/GPT timestamps here.
-                        # Agents stamp:
+                        # Agent stamps:
                         #   ts_ocr_result, ts_gpt_result, ts_gpt_verification
 
                     if serial_number:
                         _sn_set_result(pil_img, serial_number, conf)
-                        if conf == 1.0:
-                            _sn_save(serial_number)
-                            st.success("✅ Auto-saved (found in KnowledgeAgent).")
+
+                        if auto_save_mode:
+                            _sn_save(serial_number, edited=False)
+                            st.success("✅ Auto-saved (Scanner mode).")
                         else:
                             st.success("Detected a serial number.")
                     else:
                         st.warning("No serial number detected.")
-                else:
-                    st.warning("No frame captured.")
 
             # Show last captured image/result on the side
             if st.session_state.sn_image is not None:
                 st.image(st.session_state.sn_image, caption="Last captured frame", width=240)
 
+    # ===================== UPLOAD =====================
     else:
         uploaded_img = st.file_uploader("Upload an image", type=["jpg", "jpeg", "png"])
         if uploaded_img:
@@ -322,7 +332,6 @@ def serial_number_interface(sn_agent, agent_name: str):
             st.image(pil_img, caption="🖼️ Uploaded Image", use_container_width=True)
 
             if st.session_state.sn_last_upload_hash != current_hash:
-                # Start a new test case when a *new* upload is analyzed
                 start_new_case(
                     trigger="upload_analyzed",
                     task_key=task_type,
@@ -333,30 +342,41 @@ def serial_number_interface(sn_agent, agent_name: str):
 
                 with st.spinner("🔍 Analyzing image..."):
                     serial_number, conf = sn_agent.scan(pil_img)
-                    # NOTE: Do NOT stamp OCR/GPT timestamps here (agent stamps them)
 
                 if serial_number:
                     _sn_set_result(pil_img, serial_number, conf)
-                    if conf == 1.0:
-                        _sn_save(serial_number)
-                        st.success("✅ Auto-saved (found in KnowledgeAgent).")
+
+                    if auto_save_mode:
+                        _sn_save(serial_number, edited=False)
+                        st.success("✅ Auto-saved (Scanner mode).")
                     else:
                         st.success("Detected a serial number.")
                 else:
                     st.warning("No serial number detected.")
+
                 st.session_state.sn_last_upload_hash = current_hash
 
-    # --- Review & Save ---
+    # ===================== REVIEW / SAVE =====================
+    if auto_save_mode:
+        st.divider()
+        st.info("Scanner mode: results are saved automatically after each scan.")
+        return
+
     st.divider()
     st.subheader("Review & Save")
+
     detected = st.session_state.sn_detected_serial
     conf = st.session_state.sn_conf
 
-    if detected and conf != 1.0:
+    if detected:
         st.markdown("**Detected Serial Number**")
         st.code(detected)
+
         if conf is not None:
-            st.caption(f"Confidence: {conf:.2f}")
+            try:
+                st.caption(f"Confidence (PaddleOCR): {float(conf):.3f}")
+            except Exception:
+                st.caption(f"Confidence (PaddleOCR): {conf}")
 
         col_a, col_b = st.columns([1, 1])
 
@@ -378,9 +398,9 @@ def serial_number_interface(sn_agent, agent_name: str):
                     st.success(f"Saved edited serial number: `{cleaned}`")
                 else:
                     st.warning("Please enter a valid serial number.")
-
-    elif not detected:
+    else:
         st.info("Capture or upload an image to detect the serial number.")
+
 
 
 # ===================== Agent Selection =====================
@@ -389,6 +409,9 @@ if selected_agent == "SerialNumberAgent":
 
 elif selected_agent == "SerialNumberKnowledgeAgent":
     serial_number_interface(SerialNumberKnowledgeAgent(), "SerialNumberKnowledgeAgent")
+    
+elif selected_agent == "ScannerAgent":
+    serial_number_interface(ScannerAgent(), "ScannerAgent")
 
 elif selected_agent == "ManualSerialEntryAgent":
     st.subheader("Manual Serial Entry")

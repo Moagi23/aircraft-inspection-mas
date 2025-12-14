@@ -8,16 +8,20 @@ class MetaAgent:
                 "label": "Serial Number Inspection",
                 "agents": ["SerialNumberAgent"]
             },
-            "manual_serial": {
-                "label": "Manual Serial Entry",
-                "agents": ["ManualSerialEntryAgent"]
-            },
             "serial_number_knowledge": {
                 "label": "Serial Number Inspection + Knowledge Agents",
                 "agents": ["SerialNumberKnowledgeAgent"]
             },
+            "scanner": {
+                "label": "Scanner (Auto-save)",
+                "agents": ["ScannerAgent"]
+            },
             "damage_detection": {
                 "label": "Damage Detection",
                 "agents": ["DamageDetectionAgent"]
-            }
+            },
+            "manual_serial": {
+                "label": "Manual Serial Entry",
+                "agents": ["ManualSerialEntryAgent"]
+            },
         }
