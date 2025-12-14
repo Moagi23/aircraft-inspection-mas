@@ -25,8 +25,8 @@ from persistence import save_image, append_result, read_results
 
 
 # ===================== Page setup =====================
-st.set_page_config(page_title="Aircraft Inspection Assistant", layout="wide")
-st.title("Aircraft Inspection Assistant")
+st.set_page_config(page_title="Aircraft Inspection", layout="wide")
+st.title("Aircraft Inspection")
 
 st.markdown(
     """
