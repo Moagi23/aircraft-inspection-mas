@@ -136,8 +136,8 @@ rtc_config = RTCConfiguration(
                     "turns:fr-turn2.xirsys.com:443?transport=tcp",
                     "turns:fr-turn2.xirsys.com:5349?transport=tcp",
                 ],
-                "username": "irdXKd_EfhumLMw7XwVHh24u3OGGPh-ydOjPzM4C768Q-AShT6WNPCj0XmtXCeR7AAAAAGiRo79tb2FnaQ==",
-                "credential": "ebb60e18-71c4-11f0-9bb8-fa2d218ee094",
+                "username": "CsDdI0Uf68xi2ArtHg4W0aT_DXcbmOVSHJhryWHfPsJiGz5bIsnpojaKZMKXljWPAAAAAGlCW_ptYXJrdXN0ZXN0ZXJndXI=",
+                "credential": "3398ce6e-db1a-11f0-b9d0-8ec21c1a10a5",
             },
         ]
     }
